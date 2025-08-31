@@ -13,14 +13,17 @@ def load_cfg(path):
     with open(path, "r", encoding="utf-8") as f:
         return yaml.safe_load(f)
 
-def read_csv(csv_path, cols):
-    print(f"{csv_path}")
-    df = pd.read_csv(csv_path)
+def read_csv(csv_path, cols, sep):
+    df = pd.read_csv(csv_path, delimiter=sep)
     df = df.rename(columns=str.lower)
   
     # маппинг имён
-    xcol, ycol, zcol = [cols[k].lower() for k in ("Bt_Coord_X","Bt_Coord_Y","Pres")]
+    xcol, ycol, zcol = [cols[k].lower() for k in ("x","y","z")]
     need = [xcol, ycol, zcol]
+    
+    print(f"[DEBUG] Need columns: {need}")
+    print(f"[DEBUG] {df.columns}")
+    
     for c in need:
         if c not in df.columns:
             raise ValueError(f"Column '{c}' not found in CSV")
@@ -105,9 +108,9 @@ def main():
     cfg = load_cfg(cfg_path)
     csv = cfg["input_csv"]
     outdir = pathlib.Path(cfg["output_dir"]); outdir.mkdir(parents=True, exist_ok=True)
-    df, xcol, ycol, zcol = read_csv(csv, cfg["csv_columns"])
+    df, xcol, ycol, zcol = read_csv(csv, cfg["csv_columns"],cfg["csv_sep"])
     nx, ny = cfg["grid"]["nx"], cfg["grid"]["ny"]
-    margin = float(cfg["grid"]["bounds_margin_units"])
+    margin = float(cfg["bounds_margin_units"])
     GX, GY, gx, gy, bounds = build_grid(df, xcol, ycol, nx, ny, margin)
     Z, info = interpolate(df, xcol, ycol, zcol, GX, GY, cfg)
     print(f"[INFO] Interpolation: {info}, points={len(df)}, grid=({ny},{nx})")

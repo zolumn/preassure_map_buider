@@ -1,9 +1,10 @@
 input_csv: "data/wells.csv"          # путь к CSV внутри контейнера
+csv_sep: ';'
 output_dir: "out"                    # директория для артефактов
 csv_columns:
-  x: "x"
-  y: "y"
-  z: "pressure"
+  x: "bt_coord_x"
+  y: "bt_coord_y"
+  z: "pres"
   name: "well_name"
 crs_epsg: 3857                        # твой EPSG (обязательно уточни!)
 grid:
