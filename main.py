@@ -19,12 +19,13 @@ def read_csv(csv_path, cols):
     df = df.rename(columns=str.lower)
   
     # маппинг имён
-    xcol, ycol, zcol = [cols[k].lower() for k in ("Bt_Coord_X","Bt_Coord_Y","Pres(2434)")]
+    xcol, ycol, zcol = [cols[k].lower() for k in ("Bt_Coord_X","Bt_Coord_Y","Pres")]
     need = [xcol, ycol, zcol]
     for c in need:
         if c not in df.columns:
             raise ValueError(f"Column '{c}' not found in CSV")
     df = df.dropna(subset=[xcol,ycol,zcol])
+    
     # усредняем дубликаты координат
     df = (df.groupby([xcol,ycol], as_index=False)[zcol].mean()
             .sort_values([xcol,ycol]))
@@ -100,7 +101,7 @@ def save_geotiff(Z, bounds, nx, ny, epsg, nodata, out_tif):
         dst.write(Z_out, 1)
 
 def main():
-    cfg_path = os.environ.get("CONFIG", "config.yaml")
+    cfg_path = os.environ.get("CONFIG", "config/config.yaml")
     cfg = load_cfg(cfg_path)
     csv = cfg["input_csv"]
     outdir = pathlib.Path(cfg["output_dir"]); outdir.mkdir(parents=True, exist_ok=True)

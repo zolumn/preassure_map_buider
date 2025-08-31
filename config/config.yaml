@@ -1,5 +1,5 @@
-input_csv: "/data/wells.csv"          # путь к CSV внутри контейнера
-output_dir: "/out"                    # директория для артефактов
+input_csv: "data/wells.csv"          # путь к CSV внутри контейнера
+output_dir: "out"                    # директория для артефактов
 csv_columns:
   x: "x"
   y: "y"
