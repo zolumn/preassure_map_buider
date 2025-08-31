@@ -1,0 +1,27 @@
+input_csv: "/data/wells.csv"          # путь к CSV внутри контейнера
+output_dir: "/out"                    # директория для артефактов
+csv_columns:
+  x: "x"
+  y: "y"
+  z: "pressure"
+  name: "well_name"
+crs_epsg: 3857                        # твой EPSG (обязательно уточни!)
+grid:
+  nx: 300                             # количество ячеек по X
+  ny: 300                             # количество ячеек по Y
+bounds_margin_units: 100.0            # запас по краям в ЕДИНИЦАХ СИСТЕМЫ КООРДИНАТ
+interpolation:
+  method: "kriging"                   # "kriging" | "linear" | "cubic"
+  kriging:
+    variogram_model: "spherical"      # spherical | exponential | gaussian | linear
+    nlags: 6
+    enable_plotting: false
+  griddata_fallback: "linear"         # на случай нехватки точек для кригинга
+plot:
+  levels: 15
+  figsize: [8, 6]
+  cmap: "viridis"
+export:
+  png: true
+  geotiff: true
+  geotiff_nodata: -9999

@@ -1,0 +1,15 @@
+# Не добавлять веса и логи в репозиторий
+models/
+logs/
+*.onnx
+*.tflite
+*.engine
+
+# Файлы среды
+__pycache__/
+*.pyc
+*.ipynb_checkpoints
+.venv
+
+# Исходные данные
+data/
