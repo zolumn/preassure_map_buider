@@ -1,7 +1,10 @@
 ﻿import os, sys, pathlib, warnings, yaml
 import numpy as np
 import pandas as pd
+
 import matplotlib.pyplot as plt
+import matplotlib.patheffects as pe
+
 from scipy.interpolate import griddata
 from pykrige.ok import OrdinaryKriging
 from rasterio.transform import from_origin
@@ -19,20 +22,40 @@ def read_csv(csv_path, cols, sep):
   
     # маппинг имён
     xcol, ycol, zcol = [cols[k].lower() for k in ("x","y","z")]
-    need = [xcol, ycol, zcol]
-    
+    name_col = cols.get("name")
+    if name_col:
+        name_col = name_col.lower()
+    else:
+        # если явно не задано — берём самый первый столбец как имя
+        name_col = df.columns[0]
+
+    need = [xcol, ycol, zcol, name_col]
     print(f"[DEBUG] Need columns: {need}")
     print(f"[DEBUG] {df.columns}")
-    
-    for c in need:
+
+    for c in [xcol, ycol, zcol]:
         if c not in df.columns:
             raise ValueError(f"Column '{c}' not found in CSV")
-    df = df.dropna(subset=[xcol,ycol,zcol])
-    
-    # усредняем дубликаты координат
-    df = (df.groupby([xcol,ycol], as_index=False)[zcol].mean()
-            .sort_values([xcol,ycol]))
-    return df, xcol, ycol, zcol
+
+    # если колонки имени нет — создадим безопасные метки
+    if name_col not in df.columns:
+        print(f"[WARN] Name column '{name_col}' not found; will autogenerate labels")
+        name_col = "_well_name_autogen"
+        df[name_col] = [f"P{i+1}" for i in range(len(df))]
+
+    df = df.dropna(subset=[xcol, ycol, zcol])
+
+    # усредняем дубликаты координат; имя берём первое (или уникальные имена склеиваем)
+    agg = {
+        zcol: "mean",
+        name_col: (lambda s: s.iloc[0] if s.notna().any() else "")
+        # если хотите все имена в одной точке склеивать:
+        # name_col: (lambda s: ", ".join(sorted(map(str, pd.unique(s)))))
+    }
+    df = (df.groupby([xcol, ycol], as_index=False)
+            .agg(agg)
+            .sort_values([xcol, ycol]))
+    return df, xcol, ycol, zcol, name_col
 
 def build_grid(df, xcol, ycol, nx, ny, margin):
     x = df[xcol].values; y = df[ycol].values
@@ -73,18 +96,65 @@ def interpolate(df, xcol, ycol, zcol, GX, GY, cfg):
         return Z, f"griddata {method}"
 
 def save_png(df, xcol, ycol, zcol, GX, GY, Z, cfg, out_png):
+    print(f"[DEBUG] {df.head(3)}")
     plt.figure(figsize=tuple(cfg["plot"]["figsize"]))
+
     levels = cfg["plot"]["levels"]
-    cmap = cfg["plot"].get("cmap","viridis")
+    zmin = float(np.nanmin(Z))
+    zmax = float(np.nanmax(Z))
+    print(f"[DEBUG] Z range: [{zmin:.3f}, {zmax:.3f}]")
+    
+    def _levels_out_of_range(levels, zmin, zmax):
+        return not (min(levels) < zmax and max(levels) > zmin)
+    
+    if _levels_out_of_range(levels, zmin, zmax):
+        print("[WARN] Provided levels are outside Z range; auto-adjusting.")
+        levels = np.linspace(zmin, zmax, 15)
+        
+    # 1) геологическая палитра по умолчанию
+    cmap = cfg["plot"].get("cmap", "gist_earth_r")
+
     cs = plt.contourf(GX, GY, Z, levels=levels, cmap=cmap)
     c = plt.contour(GX, GY, Z, colors="k", linewidths=0.4, levels=levels)
     plt.clabel(c, inline=True, fontsize=8, fmt="%.0f")
-    sc = plt.scatter(df[xcol], df[ycol], c=df[zcol], s=18, edgecolors="k", linewidths=0.3)
+
+    # 2) треугольники на скважинах
+    # sc = plt.scatter(df[xcol], df[ycol], c=df[zcol], s=22, marker="^",
+    #                  edgecolors="k", linewidths=0.4)
+    sc = plt.scatter(
+        df[xcol], df[ycol],
+        s=26, marker="^",
+        facecolors="white", edgecolors="k", linewidths=0.5
+    )
+
+    # 3) подписи имен скважин
+    # имя колонки можно задать в конфиге csv_columns.name.
+    # если нет — берём самый первый столбец CSV.    
+    name_col = cfg.get("csv_columns", {}).get("name")
+    if name_col is None:
+        name_col = df.columns[0]
+
+    # небольшой сдвиг подписи, чтобы не попадать ровно на маркер
+    dx = cfg["plot"].get("label_dx", 3)   # в тех же единицах, что и координаты
+    dy = cfg["plot"].get("label_dy", 3)
+
+    for _, r in df.iterrows():
+        plt.annotate(
+            str(r[name_col]),
+            (r[xcol], r[ycol]),
+            xytext=(dx, dy),
+            textcoords="offset points",
+            fontsize=cfg["plot"].get("label_fontsize", 7),
+            ha="left", va="bottom",
+            path_effects=[pe.withStroke(linewidth=1.5, foreground="white")]
+        )
+
     plt.title("Pressure map (interpolated)")
     plt.colorbar(cs, label=zcol)
     plt.tight_layout()
     plt.savefig(out_png, dpi=200)
     plt.close()
+
 
 def save_geotiff(Z, bounds, nx, ny, epsg, nodata, out_tif):
     xmin, xmax, ymin, ymax = bounds
@@ -108,7 +178,8 @@ def main():
     cfg = load_cfg(cfg_path)
     csv = cfg["input_csv"]
     outdir = pathlib.Path(cfg["output_dir"]); outdir.mkdir(parents=True, exist_ok=True)
-    df, xcol, ycol, zcol = read_csv(csv, cfg["csv_columns"],cfg["csv_sep"])
+    df, xcol, ycol, zcol, name_col = read_csv(csv, cfg["csv_columns"], cfg["csv_sep"])
+
     nx, ny = cfg["grid"]["nx"], cfg["grid"]["ny"]
     margin = float(cfg["bounds_margin_units"])
     GX, GY, gx, gy, bounds = build_grid(df, xcol, ycol, nx, ny, margin)
@@ -120,6 +191,7 @@ def main():
     if cfg["export"].get("png", True):
         png_path = outdir / f"{stem}_pressure_map.png"
         save_png(df, xcol, ycol, zcol, GX, GY, Z, cfg, png_path)
+
         print(f"[OK] PNG saved: {png_path}")
     if cfg["export"].get("geotiff", True):
         tif_path = outdir / f"{stem}_pressure_map.tif"

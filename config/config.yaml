@@ -4,13 +4,13 @@ output_dir: "out"                    # директория для артефа�
 csv_columns:
   x: "bt_coord_x"
   y: "bt_coord_y"
-  z: "pres"
-  name: "well_name"
-crs_epsg: 3857                        # твой EPSG (обязательно уточни!)
+  z: "pres_upd"
+  name: "name"
+crs_epsg: 3857                        # EPSG
 grid:
-  nx: 300                             # количество ячеек по X
-  ny: 300                             # количество ячеек по Y
-bounds_margin_units: 100.0            # запас по краям в ЕДИНИЦАХ СИСТЕМЫ КООРДИНАТ
+  nx: 600                             # количество ячеек по X
+  ny: 900                             # количество ячеек по Y
+bounds_margin_units: 200.0            # запас по краям в ЕДИНИЦАХ СИСТЕМЫ КООРДИНАТ
 interpolation:
   method: "kriging"                   # "kriging" | "linear" | "cubic"
   kriging:
@@ -19,10 +19,14 @@ interpolation:
     enable_plotting: false
   griddata_fallback: "linear"         # на случай нехватки точек для кригинга
 plot:
-  levels: 15
+  levels: [10, 30, 50, 100, 150, 200, 500]
   figsize: [8, 6]
-  cmap: "viridis"
+  cmap: "gist_earth_r"
+  label_fontsize: 7
+  label_dx: 3
+  label_dy: 3
+
 export:
   png: true
-  geotiff: true
+  geotiff: false
   geotiff_nodata: -9999
