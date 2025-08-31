@@ -6,9 +6,9 @@ csv_columns:
   y: "bt_coord_y"
   z: "pres_upd"
   name: "name"
-crs_epsg: 3857                        # EPSG
+crs_epsg: 3857                        # EPSG для tif
 grid:
-  nx: 600                             # количество ячеек по X
+  nx: 900                             # количество ячеек по X
   ny: 900                             # количество ячеек по Y
 bounds_margin_units: 200.0            # запас по краям в ЕДИНИЦАХ СИСТЕМЫ КООРДИНАТ
 interpolation:

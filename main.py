@@ -31,7 +31,7 @@ def read_csv(csv_path, cols, sep):
 
     need = [xcol, ycol, zcol, name_col]
     print(f"[DEBUG] Need columns: {need}")
-    print(f"[DEBUG] {df.columns}")
+    print(f"[DEBUG] DF columns: {df.columns}")
 
     for c in [xcol, ycol, zcol]:
         if c not in df.columns:
@@ -96,7 +96,6 @@ def interpolate(df, xcol, ycol, zcol, GX, GY, cfg):
         return Z, f"griddata {method}"
 
 def save_png(df, xcol, ycol, zcol, GX, GY, Z, cfg, out_png):
-    print(f"[DEBUG] {df.head(3)}")
     plt.figure(figsize=tuple(cfg["plot"]["figsize"]))
 
     levels = cfg["plot"]["levels"]

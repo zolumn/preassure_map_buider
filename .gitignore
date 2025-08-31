@@ -15,5 +15,6 @@ __pycache__/
 data/
 
 # Построенные карты
+out/
 *.png
 *.tif
