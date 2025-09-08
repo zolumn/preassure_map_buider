@@ -16,6 +16,16 @@ def load_cfg(path):
     with open(path, "r", encoding="utf-8") as f:
         return yaml.safe_load(f)
 
+def read_static(path, sep=",", x="x", y="y", name="well_name", idcol="well_id"):
+    df = pd.read_csv(path, delimiter=sep)
+    df.columns = df.columns.str.lower()
+    need = [idcol, x, y]
+    missing = [c for c in need if c not in df.columns]
+    if missing:
+        raise ValueError(f"Static file missing columns: {missing}")
+    return df[[idcol, x, y] + ([name] if name in df.columns else [])].dropna()
+
+
 def read_csv(csv_path, cols, sep):
     df = pd.read_csv(csv_path, delimiter=sep)
     df = df.rename(columns=str.lower)

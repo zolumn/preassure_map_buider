@@ -1,0 +1,61 @@
+
+# Sample config for separated static/dynamic files joined by Name.
+input_static: "wells_static.csv"      # columns: Name, Coord_X, Coord_Y, Bt_Coord_X, Bt_Coord_Y, MD, TVD Pbp
+input_dynamic: "pressures_dynamic.csv"# columns: Name, Pres, BHP
+
+output_dir: "output"
+csv_sep: ","
+
+# Map your actual column headers (case-insensitive) to semantic fields
+static_columns:
+  name: "Name"
+  x: "Coord_X"
+  y: "Coord_Y"
+  bt_x: "Bt_Coord_X"    # optional
+  bt_y: "Bt_Coord_Y"    # optional
+  md: "MD"              # optional
+  tvd_pbp: "TVD Pbp"    # optional
+
+dynamic_columns:
+  name: "Name"
+  pres: "Pres"          # optional but at least one of pres/bhp must exist
+  bhp: "BHP"            # optional
+
+# Which Z to use if both are present
+z_preference: ["bhp","pres"]
+
+# Interpolation settings
+interpolation:
+  method: "kriging"     # "kriging" | "linear" | "nearest" | "cubic"
+  griddata_fallback: "linear"
+  kriging:
+    variogram_model: "spherical"
+    nlags: 6
+    enable_plotting: false
+
+grid:
+  nx: 200
+  ny: 200
+
+bounds_margin_units: 0.0
+crs_epsg: 32638
+
+export:
+  png: true
+  geotiff: true
+  geotiff_nodata: -9999
+
+plot:
+  figsize: [10, 8]
+  levels: [1000, 1100, 1200, 1300, 1400, 1500]
+  auto_levels_n: 15
+  cmap: "gist_earth_r"
+  draw_contour_labels: true
+  show_labels: true
+  label_dx: 3
+  label_dy: 3
+  label_fontsize: 7
+  dpi: 300
+
+# Optional label for colorbar
+z_label: "Pressure"
