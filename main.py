@@ -96,8 +96,11 @@ def interpolate(df, xcol, ycol, zcol, GX, GY, cfg):
         return Z, f"griddata {method}"
 
 def save_png(df, xcol, ycol, zcol, GX, GY, Z, cfg, out_png):
-    plt.figure(figsize=tuple(cfg["plot"]["figsize"]))
+    fig, ax = plt.subplots(figsize=tuple(cfg["plot"]["figsize"]))
 
+    # Убираем оси с координатами и цифры
+    ax.set_axis_off()
+    
     levels = cfg["plot"]["levels"]
     zmin = float(np.nanmin(Z))
     zmax = float(np.nanmax(Z))
@@ -110,7 +113,7 @@ def save_png(df, xcol, ycol, zcol, GX, GY, Z, cfg, out_png):
         print("[WARN] Provided levels are outside Z range; auto-adjusting.")
         levels = np.linspace(zmin, zmax, 15)
         
-    # 1) геологическая палитра по умолчанию
+    # 1) геологическая палитра по умолчанию или берем из конфига
     cmap = cfg["plot"].get("cmap", "gist_earth_r")
 
     cs = plt.contourf(GX, GY, Z, levels=levels, cmap=cmap)
@@ -151,7 +154,7 @@ def save_png(df, xcol, ycol, zcol, GX, GY, Z, cfg, out_png):
     plt.title("Pressure map (interpolated)")
     plt.colorbar(cs, label=zcol)
     plt.tight_layout()
-    plt.savefig(out_png, dpi=200)
+    plt.savefig(out_png, dpi=300)
     plt.close()
 
 

@@ -20,7 +20,7 @@ interpolation:
   griddata_fallback: "linear"         # на случай нехватки точек для кригинга
 plot:
   levels: [10, 30, 50, 100, 150, 200, 500]
-  figsize: [8, 6]
+  figsize: [6, 9]
   cmap: "gist_earth_r"
   label_fontsize: 7
   label_dx: 3
