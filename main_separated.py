@@ -1,5 +1,7 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
 
-import os, sys, pathlib, warnings, yaml
+import os, argparse, pathlib, warnings, yaml
 import numpy as np
 import pandas as pd
 
@@ -13,146 +15,317 @@ import rasterio
 
 warnings.filterwarnings("ignore", category=UserWarning)
 
+# -------------------------
+# CONFIG
+# -------------------------
+
 def load_cfg(path):
     with open(path, "r", encoding="utf-8") as f:
         return yaml.safe_load(f)
 
-def _normalize_cols(df):
-    # keep original header names but add a lowercase alias map
-    df.columns = df.columns.str.strip()
-    lower_map = {c: c.lower() for c in df.columns}
-    df.columns = [c for c in df.columns]  # keep original
-    return lower_map
+# -------------------------
+# DATA READERS
+# -------------------------
+
+def _lower_map(cols):
+    return {c.lower(): c for c in cols}
+
+def _autodetect(colnames, candidates):
+    """Find first existing (case-insensitive) column among candidates list."""
+    low = _lower_map(colnames)
+    for cand in candidates:
+        if cand.lower() in low:
+            return low[cand.lower()]
+    return None
 
 def read_static(path, cfg):
+    """
+    Reads static coordinates and optional TVD/Pbp from static CSV.
+    Required (via config): name, x, y.
+    Optional (auto-detected if not specified in config): tvd, pbp, bt_x, bt_y, md.
+    """
     sep = cfg.get("csv_sep", ",")
-    cols = cfg["static_columns"]
+    scol = cfg.get("static_columns", {})
     df = pd.read_csv(path, delimiter=sep)
     df.columns = df.columns.str.strip()
-    # work case-insensitively
-    lower = {c.lower(): c for c in df.columns}
-    required = [cols["name"], cols["x"], cols["y"]]
-    missing = [c for c in required if c.lower() not in lower]
-    if missing:
-        raise ValueError(f"Static file is missing columns: {missing}")
-    name_col = lower[cols["name"].lower()]
-    xcol = lower[cols["x"].lower()]
-    ycol = lower[cols["y"].lower()]
-    # Optional columns
-    opt = {}
-    for k in ["bt_x","bt_y","md","tvd_pbp"]:
-        v = cols.get(k)
-        if v and v.lower() in lower:
-            opt[k] = lower[v.lower()]
-    out = df[[name_col, xcol, ycol] + list(opt.values())].copy()
-    out.rename(columns={name_col:"name", xcol:"x", ycol:"y"}, inplace=True)
+    low = _lower_map(df.columns)
+
+    # Required by config
+    for req in ("name", "x", "y", "bt_x", "bt_y"):
+        if req not in scol or scol[req].lower() not in low:
+            raise ValueError(f"Static file is missing column specified in config: {scol.get(req)}")
+    
+    name_col = low[scol["name"].lower()]
+    xcol     = low[scol["x"].lower()]
+    ycol     = low[scol["y"].lower()]
+    bt_xcol  = low[scol["bt_x"].lower()]
+    bt_ycol  = low[scol["bt_y"].lower()]
+
+    # Optional columns - try config mapping first; else autodetect by name
+    tvd_col = None
+    pbp_col = None
+    if "tvd" in scol and scol["tvd"].lower() in low:
+        tvd_col = low[scol["tvd"].lower()]
+    else:
+        tvd_col = _autodetect(df.columns, ["TVD","tvd"])
+
+    if "pbp" in scol and scol["pbp"].lower() in low:
+        pbp_col = low[scol["pbp"].lower()]
+    else:
+        pbp_col = _autodetect(df.columns, ["Pbp","pbp","PBP"])
+
+    keep = [name_col, xcol, ycol, bt_xcol, bt_ycol]
+    if tvd_col: keep.append(tvd_col)
+    if pbp_col: keep.append(pbp_col)
+
+    out = df[keep].copy()
+    rename_map = {
+        name_col: "name", 
+        xcol: "x", 
+        ycol: "y",
+        bt_xcol: "bt_x",
+        bt_ycol: "bt_y"
+    }
+    if tvd_col: rename_map[tvd_col] = "tvd"
+    if pbp_col: rename_map[pbp_col] = "pbp"
+    out.rename(columns=rename_map, inplace=True)
+
     out["name"] = out["name"].astype(str)
-    # drop duplicates by name keeping first; coordinates assumed static
-    out = out.dropna(subset=["x","y"]).drop_duplicates(subset=["name"], keep="first")
-    return out, "x", "y", "name", opt
+    out = out.dropna(subset=["bt_x","bt_y"]).drop_duplicates(subset=["name"], keep="first")
+    return out, "bt_x", "bt_y", "name"
 
 def read_dynamic(path, cfg):
+    """
+    Reads dynamic measurements: Name + (Pres and/or BHP).
+    Returns dataframe with columns: name, pres?, bhp?
+    """
     sep = cfg.get("csv_sep", ",")
-    cols = cfg["dynamic_columns"]
+    dcol = cfg.get("dynamic_columns", {})
     df = pd.read_csv(path, delimiter=sep)
     df.columns = df.columns.str.strip()
-    lower = {c.lower(): c for c in df.columns}
-    # Required: name and at least one of Pres, BHP
-    name_key = cols["name"]
-    if name_key.lower() not in lower:
-        raise ValueError(f"Dynamic file is missing name column: {name_key}")
-    name_col = lower[name_key.lower()]
-    z_candidates = []
-    if cols.get("pres") and cols["pres"].lower() in lower:
-        z_candidates.append(("pres", lower[cols["pres"].lower()]))
-    if cols.get("bhp") and cols["bhp"].lower() in lower:
-        z_candidates.append(("bhp", lower[cols["bhp"].lower()]))
-    if not z_candidates:
+    low = _lower_map(df.columns)
+
+    if "name" not in dcol or dcol["name"].lower() not in low:
+        raise ValueError(f"Dynamic file is missing name column specified in config: {dcol.get('name')}")
+    name_col = low[dcol["name"].lower()]
+
+    pres_col = dcol.get("pres")
+    bhp_col  = dcol.get("bhp")
+    pres_col = low[pres_col.lower()] if (pres_col and pres_col.lower() in low) else _autodetect(df.columns, ["Pres","pres","PRES"])
+    bhp_col  = low[bhp_col.lower()]  if (bhp_col  and bhp_col.lower()  in low) else _autodetect(df.columns, ["BHP","bhp","BhP"])
+
+    if not pres_col and not bhp_col:
         raise ValueError("Dynamic file must contain at least one of Pres/BHP columns.")
-    # choose z by preference order
-    pref = [z.strip().lower() for z in cfg.get("z_preference", ["bhp","pres"])]
-    use = None
-    for key, col in z_candidates:
-        if key in pref and use is None:
-            use = (key, col)
-    if use is None:
-        # fallback to first available
-        use = z_candidates[0]
-    zkey, zcol = use
-    out = df[[name_col, zcol]].copy()
-    out.rename(columns={name_col:"name", zcol:"z"}, inplace=True)
+
+    keep = [name_col]
+    if pres_col: keep.append(pres_col)
+    if bhp_col:  keep.append(bhp_col)
+
+    out = df[keep].copy()
+    ren = {name_col: "name"}
+    if pres_col: ren[pres_col] = "pres"
+    if bhp_col:  ren[bhp_col]  = "bhp"
+    out.rename(columns=ren, inplace=True)
     out["name"] = out["name"].astype(str)
-    # aggregate duplicates on Name via mean
-    out = (out.dropna(subset=["z"])
-              .groupby("name", as_index=False)["z"].mean())
-    meta = {"z_source": zkey}
-    return out, "z", meta
+
+    # Drop rows where BHP is NaN
+    if "bhp" in out.columns:
+        out = out.dropna(subset=["bhp"])
+    # Drop rows where Pres is NaN
+    if "pres" in out.columns:
+        out = out.dropna(subset=["pres"])   
+
+    # Aggregate duplicates by mean for numeric columns
+    num_cols = [c for c in out.columns if c != "name"]
+    out = (out.dropna(subset=num_cols, how="all")
+              .groupby("name", as_index=False)[num_cols].mean())
+    return out
+
+# -------------------------
+# GRID INTERPOLATION
+# -------------------------
 
 def build_grid(df, xcol, ycol, nx, ny, margin):
     x = df[xcol].values; y = df[ycol].values
-    xmin, xmax = x.min()-margin, x.max()+margin
-    ymin, ymax = y.min()-margin, y.max()+margin
+    xmin, xmax = x.min() - margin, x.max() + margin
+    ymin, ymax = y.min() - margin, y.max() + margin
     gx = np.linspace(xmin, xmax, nx)
     gy = np.linspace(ymin, ymax, ny)
     GX, GY = np.meshgrid(gx, gy)
+    print(f"[DEBUG] Grid bounds: xmin={xmin}, xmax={xmax}, ymin={ymin}, ymax={ymax}")
     return GX, GY, gx, gy, (xmin, xmax, ymin, ymax)
 
-def interpolate(df, xcol, ycol, zcol, GX, GY, cfg):
-    x = df[xcol].values; y = df[ycol].values; z = df[zcol].values
-    method = cfg["interpolation"]["method"].lower()
-    if method == "kriging":
-        if len(df) < 5:
-            fallback = cfg["interpolation"].get("griddata_fallback","linear")
-            Z = griddata((x,y), z, (GX,GY), method=fallback)
-            info = f"griddata fallback ({fallback}) due to sparse points"
-            return Z, info
-        kcfg = cfg["interpolation"]["kriging"]
-        ok = OrdinaryKriging(
-            x, y, z,
-            variogram_model=kcfg.get("variogram_model","spherical"),
-            nlags=kcfg.get("nlags",6),
-            enable_plotting=kcfg.get("enable_plotting",False),
-            coordinates_type="euclidean"
+def interpolate(df, xcol, ycol, zcol, GX, GY, method='kriging'):
+    """
+    Interpolate values using specified method with fallback to 3-nearest neighbor
+    
+    Parameters:
+    -----------
+    df : pandas.DataFrame
+        Input dataframe containing x, y coordinates and z values
+    xcol : str
+        Name of x-coordinate column
+    ycol : str
+        Name of y-coordinate column
+    zcol : str
+        Name of value column to interpolate
+    GX, GY : numpy.ndarray
+        Meshgrid arrays defining the interpolation points
+    method : str
+        Interpolation method ('kriging', 'linear', 'cubic', '3-nearest')
+    
+    Returns:
+    --------
+    tuple: (Z, info_string)
+        Z : numpy.ndarray - interpolated values
+        info_string : str - description of the used method
+    """
+    # Remove rows with NaN in target column
+    df_clean = df.dropna(subset=[zcol])
+    
+    if len(df_clean) < 4:
+        raise ValueError(f"Too few valid points ({len(df_clean)}) for interpolation")
+    
+    # Extract coordinates and values
+    x = df_clean[xcol].values
+    y = df_clean[ycol].values
+    z = df_clean[zcol].values
+    
+    print(f"[DEBUG] Interpolation input:")
+    print(f"Points count: {len(z)}")
+    print(f"Value range: {z.min():.2f} to {z.max():.2f}")
+    
+    try:
+        if method.lower() == 'kriging':
+            # Scale coordinates to improve numerical stability
+            x_mean, x_std = x.mean(), x.std()
+            y_mean, y_std = y.mean(), y.std()
+            
+            x_norm = (x - x_mean) / x_std
+            y_norm = (y - y_mean) / y_std
+            
+            # Create normalized prediction grid
+            gx_norm = (np.unique(GX[0, :]) - x_mean) / x_std
+            gy_norm = (np.unique(GY[:, 0]) - y_mean) / y_std
+            
+            # Setup kriging model
+            ok = OrdinaryKriging(
+                x_norm, y_norm, z,
+                variogram_model='spherical',
+                nlags=6,
+                enable_plotting=False,
+                coordinates_type='euclidean'
+            )
+            
+            # Execute kriging
+            Z, _ = ok.execute('grid', gx_norm, gy_norm)
+            Z = np.asarray(Z)
+            
+            # Validate kriging results
+            if not np.isnan(Z).all():
+                krig_range = np.nanmax(Z) - np.nanmin(Z)
+                orig_range = z.max() - z.min()
+                
+                if krig_range > orig_range * 0.1:  # Check if range is reasonable
+                    return Z, "ordinary kriging"
+            
+            raise ValueError("Kriging produced invalid results")
+            
+        elif method.lower() in ['linear', 'cubic', '3-nearest']:
+            # For non-kriging methods, use scipy's griddata
+            actual_method = 'nearest' if method.lower() == '3-nearest' else method.lower()
+            Z = griddata((x, y), z, (GX, GY), method=actual_method)
+            
+            if not np.isnan(Z).all():
+                return Z, f"griddata {actual_method}"
+            
+            raise ValueError(f"{method} interpolation failed")
+            
+        else:
+            raise ValueError(f"Unknown interpolation method: {method}")
+            
+    except Exception as e:
+        print(f"[DEBUG] {method} interpolation failed: {str(e)}")
+        print("[DEBUG] Falling back to 3-nearest neighbor interpolation")
+        
+        # Add boundary points for better interpolation
+        x_min, x_max = x.min(), x.max()
+        y_min, y_max = y.min(), y.max()
+        
+        # Add corner points using nearest values
+        corners = [
+            (x_min, y_min), (x_min, y_max),
+            (x_max, y_min), (x_max, y_max)
+        ]
+        
+        x_extended = np.copy(x)
+        y_extended = np.copy(y)
+        z_extended = np.copy(z)
+        
+        for corner_x, corner_y in corners:
+            # Find 3 nearest points
+            distances = np.sqrt((x - corner_x)**2 + (y - corner_y)**2)
+            nearest_idx = np.argsort(distances)[:3]
+            
+            # Use mean of 3 nearest points
+            corner_z = z[nearest_idx].mean()
+            
+            x_extended = np.append(x_extended, corner_x)
+            y_extended = np.append(y_extended, corner_y)
+            z_extended = np.append(z_extended, corner_z)
+        
+        # Perform 3-nearest interpolation
+        Z = griddata(
+            (x_extended, y_extended), z_extended,
+            (GX, GY),
+            method='nearest'
         )
-        gx = np.unique(GX[0, :])
-        gy = np.unique(GY[:, 0])
-        Z, ss = ok.execute("grid", gx, gy)
-        Z = np.asarray(Z)  # (ny, nx)
-        info = "ordinary kriging"
-        return Z, info
-    else:
-        Z = griddata((x,y), z, (GX,GY), method=method)
-        return Z, f"griddata {method}"
+        
+        return Z, "3-nearest neighbor (fallback)"
+    
+    raise ValueError("All interpolation methods failed")
 
-def save_png(df, xcol, ycol, zcol, GX, GY, Z, cfg, out_png, title_suffix=""):
-    # Single figure/axes; remove axes completely as requested
+# -------------------------
+# PLOT AND EXPORT
+# -------------------------
+
+def save_png(df, xcol, ycol, zcol, GX, GY, Z, cfg, out_png, z_label=None, title_suffix=""):
+    if np.isnan(Z).all():
+        raise ValueError("Interpolated Z array contains only NaN values. Check input data and interpolation settings.")
+    
     fig, ax = plt.subplots(figsize=tuple(cfg["plot"]["figsize"]))
     ax.set_axis_off()
 
-    levels = cfg["plot"]["levels"]
-    zmin = float(np.nanmin(Z))
-    zmax = float(np.nanmax(Z))
-
-    def _levels_out_of_range(levels, zmin, zmax):
-        return not (min(levels) < zmax and max(levels) > zmin)
-    if _levels_out_of_range(levels, zmin, zmax):
-        levels = np.linspace(zmin, zmax, cfg["plot"].get("auto_levels_n", 15))
+    # Calculate data range from both original data and interpolated values
+    orig_zmin = float(df[zcol].min())
+    orig_zmax = float(df[zcol].max())
+    int_zmin = float(np.nanmin(Z))
+    int_zmax = float(np.nanmax(Z))
+    
+    # Use the wider range
+    zmin = min(orig_zmin, int_zmin)
+    zmax = max(orig_zmax, int_zmax)
+    
+    print(f"[DEBUG] Value ranges:")
+    print(f"Original data: {orig_zmin:.2f} to {orig_zmax:.2f}")
+    print(f"Interpolated: {int_zmin:.2f} to {int_zmax:.2f}")
+    print(f"Final range: {zmin:.2f} to {zmax:.2f}")
+    
+    # Create 10 evenly spaced levels
+    levels = np.linspace(zmin, zmax, 21)  # 21 boundaries create 20 intervals
+    
+    print(f"[DEBUG] Level boundaries: {levels}")
 
     cmap = cfg["plot"].get("cmap", "gist_earth_r")
-
-    cs = ax.contourf(GX, GY, Z, levels=levels, cmap=cmap)
+    cs = ax.contourf(GX, GY, Z, levels=levels, cmap=cmap, extend='both')
     c = ax.contour(GX, GY, Z, colors="k", linewidths=0.4, levels=levels)
+    
     if cfg["plot"].get("draw_contour_labels", True):
-        ax.clabel(c, inline=True, fontsize=8, fmt="%.0f")
+        ax.clabel(c, inline=True, fontsize=8, fmt="%.1f")
 
-    # well markers
-    sc = ax.scatter(
-        df[xcol], df[ycol],
-        s=26, marker="^",
-        facecolors="white", edgecolors="k", linewidths=0.5
-    )
+    ax.scatter(df[xcol], df[ycol], s=26, marker="^", 
+              facecolors="white", edgecolors="k", linewidths=0.5)
 
-    # labels (optional)
     if cfg["plot"].get("show_labels", True):
         name_col = cfg.get("csv_columns", {}).get("name", "name")
         dx = cfg["plot"].get("label_dx", 3)
@@ -161,8 +334,7 @@ def save_png(df, xcol, ycol, zcol, GX, GY, Z, cfg, out_png, title_suffix=""):
             ax.annotate(
                 str(r[name_col]),
                 (r[xcol], r[ycol]),
-                xytext=(dx, dy),
-                textcoords="offset points",
+                xytext=(dx, dy), textcoords="offset points",
                 fontsize=cfg["plot"].get("label_fontsize", 7),
                 ha="left", va="bottom",
                 path_effects=[pe.withStroke(linewidth=1.5, foreground="white")]
@@ -172,10 +344,12 @@ def save_png(df, xcol, ycol, zcol, GX, GY, Z, cfg, out_png, title_suffix=""):
     if title_suffix:
         ttl = f"{ttl} — {title_suffix}"
     ax.set_title(ttl, pad=10)
-    cbar_label = cfg.get("z_label", zcol)
+
+    cbar_label = z_label if z_label else cfg.get("z_label", zcol)
     fig.colorbar(cs, ax=ax, label=cbar_label)
+
     fig.tight_layout()
-    fig.savefig(out_png, dpi=cfg["plot"].get("dpi",300))
+    fig.savefig(out_png, dpi=cfg["plot"].get("dpi", 300))
     plt.close(fig)
 
 def save_geotiff(Z, bounds, nx, ny, epsg, nodata, out_tif):
@@ -195,36 +369,99 @@ def save_geotiff(Z, bounds, nx, ny, epsg, nodata, out_tif):
     ) as dst:
         dst.write(Z_out, 1)
 
+# -------------------------
+# DERIVED COLUMNS
+# -------------------------
+
+def compute_derived(df):
+    """
+    Adds:
+      pres_ref_2434 = Pres + (2434 - TVD)*950*9.81/100000
+      diffbhp = BHP - Pbp
+    """
+    # Hydrostatic correction constants
+    REF_DEPTH = 2434.0  # m
+    RHO       = 950.0   # kg/m3
+    G         = 9.81    # m/s2
+    DIVISOR   = 100000.0  # Pa -> bar
+
+    if "pres" in df.columns and "tvd" in df.columns:
+        df["pres_ref_2434"] = df["pres"] + (REF_DEPTH - df["tvd"]) * RHO * G / DIVISOR
+
+    if "bhp" in df.columns and "pbp" in df.columns:
+        df["diffbhp"] = df["bhp"] - df["pbp"]
+    return df
+
+# -------------------------
+# CLI
+# -------------------------
+
+def parse_args():
+    p = argparse.ArgumentParser(description="Pressure map builder (static+dynamic split, CLI z-column).")
+    p.add_argument("--config", "-c", default=os.environ.get("CONFIG", "config/config_separated.yaml"),
+                   help="Path to YAML config (defaults to CONFIG env or ./config/config_separated.yaml)")
+    p.add_argument("--z-column", help="Column to plot (e.g., pres, bhp, pres_ref_2434, diffbhp). If omitted, auto-select.")
+    p.add_argument("--z-label", help="Colorbar label override.")
+    return p.parse_args()
+
+# -------------------------
+# MAIN
+# -------------------------
+
 def main():
-    cfg_path = os.environ.get("CONFIG", "config/config_separated.yaml")
-    cfg = load_cfg(cfg_path)
+    args = parse_args()
+    cfg = load_cfg(args.config)
 
     # Read static & dynamic
-    static_df, xcol, ycol, namecol, opt = read_static(cfg["input_static"], cfg)
-    dynamic_df, zcol, meta = read_dynamic(cfg["input_dynamic"], cfg)
+    static_df, xcol, ycol, namecol = read_static(cfg["input_static"], cfg)
+    dynamic_df = read_dynamic(cfg["input_dynamic"], cfg)
 
-    # Merge on Name
+    # Merge on name
     df = static_df.merge(dynamic_df, on="name", how="inner")
+    print("[DEBUG] Merged DataFrame:")
+    print(df.head())
+    print(df.info())
 
-    # Build grid
+    # Compute derived metrics
+    df = compute_derived(df)
+
+    print("[DEBUG] After computing additional metrix:")
+    print(df.head())
+
+    # Choose z column
+    z_column = args.z_column
+    if not z_column:
+        for cand in ("bhp", "pres", "pres_ref_2434", "diffbhp"):
+            if cand in df.columns:
+                z_column = cand
+                break
+    if not z_column:
+        numeric_cols = [c for c in df.columns if c not in ["name", xcol, ycol, "tvd", "pbp"] and np.issubdtype(df[c].dtype, np.number)]
+        if not numeric_cols:
+            raise ValueError("No numeric column available to plot.")
+        z_column = numeric_cols[0]
+
+    print(f"[DEBUG] Selected z_column: {z_column}")
+    print(df[[xcol, ycol, z_column]].dropna())
+
+    # Build grid and interpolate using bottom-hole coordinates
     nx, ny = cfg["grid"]["nx"], cfg["grid"]["ny"]
     margin = float(cfg.get("bounds_margin_units", 0.0))
     GX, GY, gx, gy, bounds = build_grid(df, xcol, ycol, nx, ny, margin)
-
-    # Interpolate
-    Z, info = interpolate(df, xcol, ycol, zcol, GX, GY, cfg)
-    print(f"[INFO] Interpolation: {info}, points={len(df)}, grid=({ny},{nx}), z_source={meta['z_source']}")
+    Z, info = interpolate(df, xcol, ycol, z_column, GX, GY, method=cfg["interpolation"]["method"])
+    print(f"[INFO] Interpolation: {info}, points={len(df)}, grid=({ny},{nx}), z_column={z_column}")
+    print(f"[DEBUG] Interpolated Z array (shape={Z.shape}):")
+    print(Z)
 
     # Export
     outdir = pathlib.Path(cfg["output_dir"]); outdir.mkdir(parents=True, exist_ok=True)
     stem = pathlib.Path(cfg["input_dynamic"]).stem
-    if cfg["export"].get("png", True):
-        png_path = outdir / f"{stem}_pressure_map.png"
-        title_suffix = meta.get("z_source","").upper()
-        save_png(df, xcol, ycol, zcol, GX, GY, Z, cfg, png_path, title_suffix=title_suffix)
-        print(f"[OK] PNG saved: {png_path}")
+    png_path = outdir / f"{stem}_pressure_map_{z_column}.png"
+    save_png(df, xcol, ycol, z_column, GX, GY, Z, cfg, png_path, z_label=args.z_label, title_suffix=z_column)
+    print(f"[OK] PNG saved: {png_path}")
+
     if cfg["export"].get("geotiff", True):
-        tif_path = outdir / f"{stem}_pressure_map.tif"
+        tif_path = outdir / f"{stem}_pressure_map_{z_column}.tif"
         save_geotiff(Z, bounds, nx, ny, cfg["crs_epsg"], cfg["export"]["geotiff_nodata"], tif_path)
         print(f"[OK] GeoTIFF saved: {tif_path}")
 

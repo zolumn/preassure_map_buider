@@ -30,13 +30,13 @@ def read_csv(csv_path, cols, sep):
     df = pd.read_csv(csv_path, delimiter=sep)
     df = df.rename(columns=str.lower)
   
-    # маппинг имён
+    # маппинг имен
     xcol, ycol, zcol = [cols[k].lower() for k in ("x","y","z")]
     name_col = cols.get("name")
     if name_col:
         name_col = name_col.lower()
     else:
-        # если явно не задано — берём самый первый столбец как имя
+        # если явно не задано — берем самый первый столбец как имя
         name_col = df.columns[0]
 
     need = [xcol, ycol, zcol, name_col]
