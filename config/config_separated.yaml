@@ -46,8 +46,8 @@ export:
   geotiff_nodata: -9999
 
 plot:
-  figsize: [6, 9]
-  cmap: "gist_earth_r"
+  figsize: [7, 9]
+  cmap: "geology"   # Will use geology.clr if available, fallback to "gist_earth_r"
   draw_contour_labels: true
   show_labels: true
   label_dx: 3

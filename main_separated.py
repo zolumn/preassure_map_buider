@@ -1,12 +1,16 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
-import os, argparse, pathlib, warnings, yaml
+import pathlib
+import os, argparse, warnings, yaml
+from pathlib import Path  # Add this import
 import numpy as np
 import pandas as pd
 
 import matplotlib.pyplot as plt
 import matplotlib.patheffects as pe
+import matplotlib.colors as mcolors
+from matplotlib.colors import LinearSegmentedColormap
 
 from scipy.interpolate import griddata
 from pykrige.ok import OrdinaryKriging
@@ -19,9 +23,77 @@ warnings.filterwarnings("ignore", category=UserWarning)
 # CONFIG
 # -------------------------
 
+def read_surfer_colormap(clr_path):
+    """
+    Read Surfer .clr file and convert it to matplotlib colormap
+    
+    Parameters:
+    -----------
+    clr_path : str or Path
+        Path to Surfer .clr file
+        
+    Returns:
+    --------
+    matplotlib.colors.LinearSegmentedColormap
+    """
+    colors = []
+    
+    with open(clr_path, 'r') as f:
+        # Skip header line
+        header = f.readline()
+        if not header.startswith('ColorMap'):
+            raise ValueError(f"Invalid colormap file format: {clr_path}")
+            
+        for line in f:
+            # Skip empty lines
+            if not line.strip():
+                continue
+                
+            # Parse color values
+            parts = line.strip().split()
+            if len(parts) >= 5:  # position R G B A format
+                try:
+                    r = int(parts[1]) / 255
+                    g = int(parts[2]) / 255
+                    b = int(parts[3]) / 255
+                    colors.append((r, g, b))
+                except (ValueError, IndexError) as e:
+                    print(f"Warning: Skipping invalid line in colormap file: {line.strip()}")
+                    continue
+    
+    if not colors:
+        raise ValueError(f"No valid colors found in {clr_path}")
+    
+    # Create colormap with 100 bins for smooth interpolation
+    return LinearSegmentedColormap.from_list('geology', colors, N=100)
+
 def load_cfg(path):
+    """Load and process configuration"""
     with open(path, "r", encoding="utf-8") as f:
-        return yaml.safe_load(f)
+        cfg = yaml.safe_load(f)
+    
+    # Try to load geology colormap
+    clr_path = Path(Path(path).parent / "geology.clr")
+    if clr_path.exists():
+        try:
+            # Create and register the colormap
+            geology_cmap = read_surfer_colormap(clr_path)
+            plt.colormaps.register(geology_cmap)
+            
+            # Set as default in config
+            if "plot" not in cfg:
+                cfg["plot"] = {}
+            cfg["plot"]["cmap"] = 'geology'
+            
+            print(f"[DEBUG] Successfully loaded colormap from {clr_path}")
+        except Exception as e:
+            print(f"[WARNING] Failed to load geology colormap: {e}")
+            # Set fallback colormap
+            if "plot" not in cfg:
+                cfg["plot"] = {}
+            cfg["plot"]["cmap"] = "gist_earth_r"
+    
+    return cfg
 
 # -------------------------
 # DATA READERS
@@ -156,30 +228,6 @@ def build_grid(df, xcol, ycol, nx, ny, margin):
     return GX, GY, gx, gy, (xmin, xmax, ymin, ymax)
 
 def interpolate(df, xcol, ycol, zcol, GX, GY, method='kriging'):
-    """
-    Interpolate values using specified method with fallback to 3-nearest neighbor
-    
-    Parameters:
-    -----------
-    df : pandas.DataFrame
-        Input dataframe containing x, y coordinates and z values
-    xcol : str
-        Name of x-coordinate column
-    ycol : str
-        Name of y-coordinate column
-    zcol : str
-        Name of value column to interpolate
-    GX, GY : numpy.ndarray
-        Meshgrid arrays defining the interpolation points
-    method : str
-        Interpolation method ('kriging', 'linear', 'cubic', '3-nearest')
-    
-    Returns:
-    --------
-    tuple: (Z, info_string)
-        Z : numpy.ndarray - interpolated values
-        info_string : str - description of the used method
-    """
     # Remove rows with NaN in target column
     df_clean = df.dropna(subset=[zcol])
     
@@ -197,37 +245,58 @@ def interpolate(df, xcol, ycol, zcol, GX, GY, method='kriging'):
     
     try:
         if method.lower() == 'kriging':
-            # Scale coordinates to improve numerical stability
-            x_mean, x_std = x.mean(), x.std()
-            y_mean, y_std = y.mean(), y.std()
+            # Get min/max for coordinates to set variogram parameters
+            x_range = x.max() - x.min()
+            y_range = y.max() - y.min()
+            avg_range = (x_range + y_range) / 2
             
-            x_norm = (x - x_mean) / x_std
-            y_norm = (y - y_mean) / y_std
+            # Calculate variogram parameters
+            sill = np.var(z)  # Use variance of data as sill
+            variogram_parameters = {
+                'sill': sill,
+                'range': avg_range / 3,  # Use 1/3 of average range
+                'nugget': 0.0  # Start with no nugget effect
+            }
             
-            # Create normalized prediction grid
-            gx_norm = (np.unique(GX[0, :]) - x_mean) / x_std
-            gy_norm = (np.unique(GY[:, 0]) - y_mean) / y_std
-            
-            # Setup kriging model
+            # Set up the kriging model with explicit variogram parameters
             ok = OrdinaryKriging(
-                x_norm, y_norm, z,
+                x, y, z,
                 variogram_model='spherical',
-                nlags=6,
-                enable_plotting=False,
-                coordinates_type='euclidean'
+                variogram_parameters=variogram_parameters,
+                nlags=10,
+                weight=True,
+                verbose=False,
+                enable_plotting=False
             )
             
-            # Execute kriging
-            Z, _ = ok.execute('grid', gx_norm, gy_norm)
-            Z = np.asarray(Z)
+            # Get grid points for kriging
+            grid_x = np.unique(GX[0, :])
+            grid_y = np.unique(GY[:, 0])
             
-            # Validate kriging results
+            # Perform kriging interpolation
+            Z, ss = ok.execute(
+                'grid', 
+                grid_x,
+                grid_y
+            )
+            
+            # Verify results
             if not np.isnan(Z).all():
-                krig_range = np.nanmax(Z) - np.nanmin(Z)
-                orig_range = z.max() - z.min()
+                print("[DEBUG] Kriging validation:")
+                print(f"Input range: {z.min():.2f} to {z.max():.2f}")
+                print(f"Output range: {np.nanmin(Z):.2f} to {np.nanmax(Z):.2f}")
+                print(f"Variogram parameters used:")
+                print(f"  - Sill: {variogram_parameters['sill']:.2f}")
+                print(f"  - Range: {variogram_parameters['range']:.2f}")
+                print(f"  - Nugget: {variogram_parameters['nugget']:.2f}")
                 
-                if krig_range > orig_range * 0.1:  # Check if range is reasonable
-                    return Z, "ordinary kriging"
+                # If kriging result is constant, fall back to linear
+                if np.allclose(Z, Z[0,0], rtol=1e-5):
+                    print("[DEBUG] Kriging produced constant value, falling back to linear")
+                    Z = griddata((x, y), z, (GX, GY), method='linear')
+                    return Z, "linear (kriging fallback)"
+                
+                return Z, "ordinary kriging"
             
             raise ValueError("Kriging produced invalid results")
             
@@ -248,40 +317,14 @@ def interpolate(df, xcol, ycol, zcol, GX, GY, method='kriging'):
         print(f"[DEBUG] {method} interpolation failed: {str(e)}")
         print("[DEBUG] Falling back to 3-nearest neighbor interpolation")
         
-        # Add boundary points for better interpolation
-        x_min, x_max = x.min(), x.max()
-        y_min, y_max = y.min(), y.max()
-        
-        # Add corner points using nearest values
-        corners = [
-            (x_min, y_min), (x_min, y_max),
-            (x_max, y_min), (x_max, y_max)
-        ]
-        
-        x_extended = np.copy(x)
-        y_extended = np.copy(y)
-        z_extended = np.copy(z)
-        
-        for corner_x, corner_y in corners:
-            # Find 3 nearest points
-            distances = np.sqrt((x - corner_x)**2 + (y - corner_y)**2)
-            nearest_idx = np.argsort(distances)[:3]
-            
-            # Use mean of 3 nearest points
-            corner_z = z[nearest_idx].mean()
-            
-            x_extended = np.append(x_extended, corner_x)
-            y_extended = np.append(y_extended, corner_y)
-            z_extended = np.append(z_extended, corner_z)
-        
-        # Perform 3-nearest interpolation
+        # Perform nearest neighbor interpolation as fallback
         Z = griddata(
-            (x_extended, y_extended), z_extended,
+            (x, y), z,
             (GX, GY),
             method='nearest'
         )
         
-        return Z, "3-nearest neighbor (fallback)"
+        return Z, "nearest neighbor (fallback)"
     
     raise ValueError("All interpolation methods failed")
 
@@ -311,20 +354,21 @@ def save_png(df, xcol, ycol, zcol, GX, GY, Z, cfg, out_png, z_label=None, title_
     print(f"Interpolated: {int_zmin:.2f} to {int_zmax:.2f}")
     print(f"Final range: {zmin:.2f} to {zmax:.2f}")
     
-    # Create 10 evenly spaced levels
+    # Create evenly spaced levels
     levels = np.linspace(zmin, zmax, 21)  # 21 boundaries create 20 intervals
     
     print(f"[DEBUG] Level boundaries: {levels}")
 
+    # Use the same levels for both contourf and contour
     cmap = cfg["plot"].get("cmap", "gist_earth_r")
     cs = ax.contourf(GX, GY, Z, levels=levels, cmap=cmap, extend='both')
-    c = ax.contour(GX, GY, Z, colors="k", linewidths=0.4, levels=levels)
+    c = ax.contour(GX, GY, Z, colors="k", linewidths=0.4, levels=levels[::2])
     
     if cfg["plot"].get("draw_contour_labels", True):
-        ax.clabel(c, inline=True, fontsize=8, fmt="%.1f")
+        ax.clabel(c, inline=True, fontsize=6, fmt="%.1f", levels=levels[::2])  # Reduced fontsize from 8 to 6
 
-    ax.scatter(df[xcol], df[ycol], s=26, marker="^", 
-              facecolors="white", edgecolors="k", linewidths=0.5)
+    # Plot wells
+    ax.scatter(df[xcol], df[ycol], s=26, marker="^", facecolors="white", edgecolors="k", linewidths=0.5)
 
     if cfg["plot"].get("show_labels", True):
         name_col = cfg.get("csv_columns", {}).get("name", "name")
@@ -337,7 +381,8 @@ def save_png(df, xcol, ycol, zcol, GX, GY, Z, cfg, out_png, z_label=None, title_
                 xytext=(dx, dy), textcoords="offset points",
                 fontsize=cfg["plot"].get("label_fontsize", 7),
                 ha="left", va="bottom",
-                path_effects=[pe.withStroke(linewidth=1.5, foreground="white")]
+                color='black',  # Added explicit black color for well labels
+                #path_effects=[pe.withStroke(linewidth=1.5), foreground="white"]
             )
 
     ttl = cfg["plot"].get("title", "Pressure map")
@@ -427,7 +472,8 @@ def main():
 
     print("[DEBUG] After computing additional metrix:")
     print(df.head())
-
+    df.to_csv(f'{pathlib.Path(cfg["output_dir"])}/debug_merged_data.csv')
+    
     # Choose z column
     z_column = args.z_column
     if not z_column:
