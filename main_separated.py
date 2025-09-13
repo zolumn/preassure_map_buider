@@ -73,7 +73,7 @@ def load_cfg(path):
         cfg = yaml.safe_load(f)
     
     # Try to load geology colormap
-    clr_path = Path(Path(path).parent / "geology.clr")
+    clr_path = Path(Path(path).parent / "geology.clr") # Look for clr file in same dir as config
     if clr_path.exists():
         try:
             # Create and register the colormap
@@ -443,8 +443,8 @@ def compute_derived(df):
 
 def parse_args():
     p = argparse.ArgumentParser(description="Pressure map builder (static+dynamic split, CLI z-column).")
-    p.add_argument("--config", "-c", default=os.environ.get("CONFIG", "config/config_separated.yaml"),
-                   help="Path to YAML config (defaults to CONFIG env or ./config/config_separated.yaml)")
+    p.add_argument("--config", "-c", default=os.environ.get("CONFIG", "app/config/config_separated.yaml"),
+                   help="Path to YAML config (defaults to CONFIG env or ./app/config/config_separated.yaml)")
     p.add_argument("--z-column", help="Column to plot (e.g., pres, bhp, pres_ref_2434, diffbhp). If omitted, auto-select.")
     p.add_argument("--z-label", help="Colorbar label override.")
     return p.parse_args()

@@ -1,8 +1,8 @@
 # Sample config for separated static/dynamic files joined by Name.
-input_static: "data/wells_static.csv"       # columns: Name, Coord_X, Coord_Y, Bt_Coord_X, Bt_Coord_Y, MD, TVD Pbp
-input_dynamic: "data/pressures_dynamic.csv" # columns: Name, Pres, BHP
+input_static: "app/data/wells_static.csv"       # columns: Name, Coord_X, Coord_Y, Bt_Coord_X, Bt_Coord_Y, MD, TVD Pbp
+input_dynamic: "app/data/pressures_dynamic.csv" # columns: Name, Pres, BHP
 
-output_dir: "out"
+output_dir: "app/out"
 csv_sep: ";"
 
 # Map your actual column headers (case-insensitive) to semantic fields

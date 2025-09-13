@@ -1,0 +1,13 @@
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.log
+*.tmp
+*.ipynb_checkpoints
+.venv/
+venv/
+build/
+dist/
+data/
+output/
